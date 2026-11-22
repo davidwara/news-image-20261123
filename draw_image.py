@@ -1,201 +1,229 @@
 #!/usr/bin/env python3
-"""Render the 23 November 2026 world-news front page as a 1024x1024 PNG.
+"""One-page newspaper of world news for Monday 23 November 2026.
 
-Layout (built fresh for this edition): masthead with a red rule, a
-full-width lead headline on the COP31 collapse with two text columns
-below it (climate left, Gulf right) plus a verdict strip, a dark
-markets band with a horizontal bar chart of Friday's rout, a 2x3 grid
-of story cards, and a navy ticker footer.
-Deterministic: no clock or random data inside the image, fixed fonts
-and geometry. Every line is wrapped to its box; nothing is clipped.
+The page is drawn with Pillow at 1024x1024 and saved as entry.png.
+Sections, top to bottom: a masthead with the date and a red top rule;
+a lead story on the COP31 collapse with a two-column explainer and a
+verdict strip; a dark band charting Friday's market rout; six story
+cards in two rows of three; and a navy ticker footer.
+The drawing is fully deterministic: fixed fonts, fixed geometry, no
+clock, no randomness, no network. Running the script twice produces
+byte-identical PNG output.
 
-Stories verified 23 Nov 2026 (Reuters, AP, CNN, BBC, AFP, ATP Tour):
-COP31 collapsed Sunday in Antalya; Gulf war around Hormuz; Friday
-20 Nov market rout; Dymer drone strike; Sparta II fire; Russian
-missiles into Poland + NATO meeting today; Banten factory fire;
-ICJ Rohingya genocide ruling (Thu 19 Nov); Alcaraz wins ATP Finals;
-Belgium flight shutdown today; Nepal PM in Delhi; South Korea
-minister resigns; India 720/9 in Wellington; Van Gogh $190.4m.
+Every story below was verified against wire reporting on 23 Nov 2026
+(Reuters, AP, CNN, BBC, AFP, ATP Tour). Dates are labelled in the
+image wherever a story broke on an earlier day but led the news on
+the 23rd: the COP31 collapse and the Dymer strike are Sunday's, the
+market rout is Friday's, the ICJ ruling is Thursday's.
 """
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1024, 1024
-OUT = "entry.png"
+CANVAS_W, CANVAS_H = 1024, 1024
+OUTPUT_FILE = "entry.png"
 
-SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
-SERIF_B = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-SANS_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+FONT_SERIF_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+FONT_SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_SANS_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-INK = (20, 20, 22)
-PAPER = (251, 249, 244)
-RED = (176, 32, 26)
-NAVY = (15, 40, 88)
-DARK = (22, 26, 36)
-GREY = (96, 96, 100)
-RULE = (178, 172, 162)
-CARD = (255, 255, 255)
-TEAL = (13, 104, 90)
-GOLD = (255, 208, 88)
-BAR = (255, 106, 96)
-PALE = (206, 206, 212)
+COL_INK = (20, 20, 22)
+COL_PAGE = (251, 249, 244)
+COL_RED = (176, 32, 26)
+COL_NAVY = (15, 40, 88)
+COL_SLATE = (22, 26, 36)
+COL_GREY = (96, 96, 100)
+COL_HAIRLINE = (178, 172, 162)
+COL_CARD = (255, 255, 255)
+COL_TEAL = (13, 104, 90)
+COL_GOLD = (255, 208, 88)
+COL_BAR = (255, 106, 96)
+COL_MIST = (206, 206, 212)
 
 
-def F(path, size):
+def typeface(path, size):
+    """Load a TrueType font at the requested point size."""
     return ImageFont.truetype(path, size)
 
 
-def wrap(d, text, fnt, width):
-    lines, cur = [], ""
+def fit_lines(cv, text, face, max_width):
+    """Greedy word wrap: split text into lines that fit max_width."""
+    fitted, current = [], ""
     for word in text.split():
-        trial = (cur + " " + word).strip()
-        if d.textlength(trial, font=fnt) <= width:
-            cur = trial
+        attempt = (current + " " + word).strip()
+        if cv.textlength(attempt, font=face) <= max_width:
+            current = attempt
         else:
-            if cur:
-                lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
-    return lines
+            if current:
+                fitted.append(current)
+            current = word
+    if current:
+        fitted.append(current)
+    return fitted
 
 
-def block(d, x, y, text, fnt, width, leading, fill=INK, cap=None):
-    lines = wrap(d, text, fnt, width)
-    if cap:
+def draw_para(cv, x, y, text, face, max_width, leading, fill=COL_INK, cap=None):
+    """Draw wrapped text starting at (x, y); return the y below it."""
+    lines = fit_lines(cv, text, face, max_width)
+    if cap is not None:
         lines = lines[:cap]
     for line in lines:
-        d.text((x, y), line, font=fnt, fill=fill)
+        cv.text((x, y), line, font=face, fill=fill)
         y += leading
     return y
 
 
-def rule(d, x0, x1, y, fill=INK, w=2):
-    d.line([(x0, y), (x1, y)], fill=fill, width=w)
+def hrule(cv, x0, x1, y, fill=COL_INK, width=2):
+    """Draw a horizontal rule between x0 and x1 at height y."""
+    cv.line([(x0, y), (x1, y)], fill=fill, width=width)
 
 
-img = Image.new("RGB", (W, H), PAPER)
-d = ImageDraw.Draw(img)
+def drop_bar(cv, x_label, y, name, value, magnitude, x_bar, max_bar_width):
+    """One row of the market chart: label, red bar, value."""
+    cv.text((x_label, y), name, font=typeface(FONT_SANS_BOLD, 12), fill=COL_MIST)
+    bar_width = int(max_bar_width * magnitude / 6.2)
+    cv.rectangle([x_bar, y + 1, x_bar + bar_width, y + 12], fill=COL_BAR)
+    cv.text((x_bar + bar_width + 6, y), value,
+            font=typeface(FONT_SANS_BOLD, 12), fill=(255, 255, 255))
 
-# ---------------- masthead ----------------
-d.rectangle([0, 0, W, 10], fill=RED)
-d.text((32, 24), "THE WORLD IN ONE PAGE", font=F(SERIF_B, 50), fill=INK)
-d.text((32, 84), "MONDAY, 23 NOVEMBER 2026", font=F(SANS_B, 24), fill=RED)
-d.text((32, 116),
-       "14 stories from one day  •  Antalya  •  Hormuz  •  Kyiv  •  The Hague  •  Turin",
-       font=F(SANS, 17), fill=GREY)
-d.text((W - 32, 84), "No. 23", font=F(SERIF_B, 24), fill=INK, anchor="ra")
-d.text((W - 32, 116), "MONDAY EDITION", font=F(SANS, 15), fill=GREY, anchor="ra")
-rule(d, 32, W - 32, 146, fill=INK, w=3)
-rule(d, 32, W - 32, 152, fill=INK, w=1)
 
-# ---------------- lead: COP31 collapse ----------------
-LY = 164
-d.text((32, LY), "CLIMATE  •  THE LEAD STORY", font=F(SANS_B, 17), fill=TEAL)
-y = block(d, 32, LY + 26,
-          "COP31 COLLAPSES IN ANTALYA — NO CLIMATE DEAL",
-          F(SERIF_B, 30), 960, 36, cap=2)
-y += 4
-d.text((32, y), "The longest summit in history ends without a pact — the first major breakdown since Copenhagen in 2009.",
-       font=F(SANS, 17), fill=GREY)
-y += 24
-# two columns: climate detail (left) / Gulf (right)
-COL_Y = y
-d.text((32, COL_Y), "WHAT HAPPENED", font=F(SANS_B, 15), fill=TEAL)
-y1 = block(d, 32, COL_Y + 24,
-           "After two days of overtime, COP31 presidents put the “Antalya Pact” "
-           "to nearly 200 nations on Sunday — and the EU, Britain, Panama and "
-           "others rejected it, because it never named fossil fuels. A $120bn "
-           "finance target was dropped too.",
-           F(SANS, 17), 590, 22, cap=4)
-d.line([(652, COL_Y), (652, COL_Y + 128)], fill=RULE, width=1)
-d.text((672, COL_Y), "THE GULF  •  WAR", font=F(SANS_B, 15), fill=RED)
-y2 = block(d, 672, COL_Y + 24,
-           "Iran's war with the U.S. and Israel, now in its ninth month, still "
-           "rages around the Strait of Hormuz. Houthi missiles fired at Saudi "
-           "Arabia were intercepted; Qatar-mediated talks have stalled.",
-           F(SANS, 15), 320, 20, cap=5)
-# verdict strip
-VY = COL_Y + 132
-d.rectangle([32, VY, W - 32, VY + 30], outline=RED, width=2)
-d.text((44, VY + 7), "VERDICT IN ANTALYA:  44 HOURS OF OVERTIME  •  NO CONSENSUS  •  PARIS DEAL STILL STANDS",
-       font=F(SANS_B, 14), fill=RED)
+def story_card(cv, x, y, width, height, kicker, headline, body):
+    """One white story card with a red kicker, serif headline, body."""
+    cv.rounded_rectangle([x, y, x + width, y + height], radius=6,
+                         fill=COL_CARD, outline=COL_HAIRLINE, width=1)
+    cv.text((x + 12, y + 10), kicker, font=typeface(FONT_SANS_BOLD, 13), fill=COL_RED)
+    after_head = draw_para(cv, x + 12, y + 32, headline,
+                           typeface(FONT_SERIF_BOLD, 19), width - 24, 23, cap=2)
+    draw_para(cv, x + 12, after_head + 4, body,
+              typeface(FONT_SANS, 13), width - 24, 17, cap=5)
 
-rule(d, 32, W - 32, 462, fill=INK, w=2)
 
-# ---------------- markets band ----------------
-d.rectangle([0, 472, W, 566], fill=DARK)
-d.text((32, 482), "FRIDAY'S ROUT: THE AI TRADE UNRAVELS", font=F(SANS_B, 20), fill=(255, 255, 255))
-d.text((32, 508), "The S&P 500 fell 3.7% on Friday, its worst week since March 2020.",
-       font=F(SANS, 15), fill=PALE)
-d.text((32, 527), "Nasdaq 100 is in a bear market; world stocks fell 7 days in a row.",
-       font=F(SANS, 15), fill=PALE)
-d.text((32, 546), "Tokyo is closed today for a holiday. Bitcoin near $59,900.",
-       font=F(SANS, 15), fill=PALE)
-# Friday drops, biggest first
-drops = [("TAIWAN", "-6.2%", 6.2),
-         ("NASDAQ", "-5.3%", 5.3),
-         ("KOSPI", "-5.2%", 5.2),
-         ("NIKKEI", "-5.1%", 5.1),
-         ("S&P 500", "-3.7%", 3.7)]
-BX, BW = 640, 200
-for i, (name, val, mag) in enumerate(drops):
-    by = 480 + i * 17
-    d.text((560, by), name, font=F(SANS_B, 12), fill=PALE)
-    bw = int(BW * mag / 6.2)
-    d.rectangle([BX, by + 1, BX + bw, by + 12], fill=BAR)
-    d.text((BX + bw + 6, by), val, font=F(SANS_B, 12), fill=(255, 255, 255))
+def build_page():
+    """Compose the whole front page and return the Pillow image."""
+    page = Image.new("RGB", (CANVAS_W, CANVAS_H), COL_PAGE)
+    cv = ImageDraw.Draw(page)
 
-# ---------------- 2x3 card grid ----------------
-cards = [
-    ("UKRAINE  •  WAR", "14 missing as drone flattens Kyiv flats",
-     "A Russian drone struck a five-storey block in Dymer, north of Kyiv, "
-     "on Sunday morning. One body was recovered; 14 people, including two "
-     "children, are unaccounted for. Nine were evacuated."),
-    ("BALTIC  •  SHADOW WAR", "Burning Russian ship towed from Finnish waters",
-     "The sanctioned cargo ship Sparta II, hit by drones on Saturday, was "
-     "still smouldering on Sunday as Finland, Estonia and Russia fought "
-     "the fire together. All 16 crew were evacuated."),
-    ("NATO  •  POLAND", "NATO meets today after missiles land in Poland",
-     "Three Russian Kh-101 missiles crossed into Poland on Friday during a "
-     "huge barrage on Ukraine. Nobody was hurt. NATO's council meets in "
-     "Brussels today; chief Mark Rutte called it a “grave violation”."),
-    ("INDONESIA  •  DISASTER", "50 missing after candy factory fire",
-     "A fire tore through the PT Fonusa Agung Mulia candy factory in Banten "
-     "on Saturday evening. Three workers are confirmed dead, seven body "
-     "bags were recovered and about 50 are missing."),
-    ("JUSTICE  •  THE HAGUE", "World court: Myanmar committed genocide",
-     "The International Court of Justice ruled on Thursday that Myanmar "
-     "committed genocide against the Rohingya in 2017 — the first time it "
-     "has found a state guilty of genocide. Reparations were ordered."),
-    ("SPORT  •  TENNIS", "Alcaraz beats Zverev to win ATP Finals",
-     "Carlos Alcaraz beat world No. 1 Alexander Zverev 6–2, 7–6(7) in Turin "
-     "on Sunday to win his first ATP Finals title. He is only the fourth "
-     "man to hold a career Grand Slam and this trophy."),
-]
-GX, GY = 32, 574
-CW, CH, GAPX, GAPY = 306, 178, 12, 10
-for i, (kicker, head, body) in enumerate(cards):
-    x = GX + (i % 3) * (CW + GAPX)
-    yy = GY + (i // 3) * (CH + GAPY)
-    d.rounded_rectangle([x, yy, x + CW, yy + CH], radius=6, fill=CARD,
-                        outline=RULE, width=1)
-    d.text((x + 12, yy + 10), kicker, font=F(SANS_B, 13), fill=RED)
-    hy = block(d, x + 12, yy + 32, head, F(SERIF_B, 19), CW - 24, 23, cap=2)
-    block(d, x + 12, hy + 4, body, F(SANS, 13), CW - 24, 17, cap=5)
+    # ---------- masthead ----------
+    cv.rectangle([0, 0, CANVAS_W, 10], fill=COL_RED)
+    cv.text((32, 24), "THE WORLD IN ONE PAGE",
+            font=typeface(FONT_SERIF_BOLD, 50), fill=COL_INK)
+    cv.text((32, 84), "MONDAY, 23 NOVEMBER 2026",
+            font=typeface(FONT_SANS_BOLD, 24), fill=COL_RED)
+    cv.text((32, 116),
+            "14 stories from one day  •  Antalya  •  Hormuz  •  Kyiv  •  The Hague  •  Turin",
+            font=typeface(FONT_SANS, 17), fill=COL_GREY)
+    cv.text((CANVAS_W - 32, 84), "No. 23",
+            font=typeface(FONT_SERIF_BOLD, 24), fill=COL_INK, anchor="ra")
+    cv.text((CANVAS_W - 32, 116), "MONDAY EDITION",
+            font=typeface(FONT_SANS, 15), fill=COL_GREY, anchor="ra")
+    hrule(cv, 32, CANVAS_W - 32, 146, fill=COL_INK, width=3)
+    hrule(cv, 32, CANVAS_W - 32, 152, fill=COL_INK, width=1)
 
-# ---------------- footer + ticker ----------------
-d.text((32, 942),
-       "Sources: Reuters, AP, CNN, BBC, AFP, ATP Tour  •  First reported 22–23 Nov 2026; markets are Friday's trading; ICJ ruling 19 Nov.",
-       font=F(SANS, 12), fill=GREY)
-d.rectangle([0, 962, W, H], fill=NAVY)
-d.text((32, 968), "ALSO TODAY", font=F(SANS_B, 14), fill=GOLD)
-d.text((32, 986),
-       "Belgium grounds all flights 07:00–21:00 today in a national strike — 429 flights, 59,500 passengers  •  Nepal's PM meets Modi in Delhi",
-       font=F(SANS, 13), fill=(235, 235, 240))
-d.text((32, 1004),
-       "South Korea's education minister quits over AI cheating  •  India post a record 720/9 in Wellington  •  Van Gogh sells for $190.4m in New York",
-       font=F(SANS, 13), fill=(235, 235, 240))
+    # ---------- lead story: COP31 collapse ----------
+    lead_y = 164
+    cv.text((32, lead_y), "CLIMATE  •  THE LEAD STORY",
+            font=typeface(FONT_SANS_BOLD, 17), fill=COL_TEAL)
+    y = draw_para(cv, 32, lead_y + 26,
+                  "COP31 COLLAPSES IN ANTALYA — NO CLIMATE DEAL",
+                  typeface(FONT_SERIF_BOLD, 30), 960, 36, cap=2)
+    y += 4
+    cv.text((32, y),
+            "The longest summit in history ends without a pact — the first major breakdown since Copenhagen in 2009.",
+            font=typeface(FONT_SANS, 17), fill=COL_GREY)
+    y += 24
+    columns_y = y
+    cv.text((32, columns_y), "WHAT HAPPENED",
+            font=typeface(FONT_SANS_BOLD, 15), fill=COL_TEAL)
+    draw_para(cv, 32, columns_y + 24,
+              "After two days of overtime, COP31 presidents put the “Antalya Pact” "
+              "to nearly 200 nations on Sunday — and the EU, Britain, Panama and "
+              "others rejected it, because it never named fossil fuels. A $120bn "
+              "finance target was dropped too.",
+              typeface(FONT_SANS, 17), 590, 22, cap=4)
+    cv.line([(652, columns_y), (652, columns_y + 128)], fill=COL_HAIRLINE, width=1)
+    cv.text((672, columns_y), "THE GULF  •  WAR",
+            font=typeface(FONT_SANS_BOLD, 15), fill=COL_RED)
+    draw_para(cv, 672, columns_y + 24,
+              "Iran's war with the U.S. and Israel, now in its ninth month, still "
+              "rages around the Strait of Hormuz. Houthi missiles fired at Saudi "
+              "Arabia were intercepted; Qatar-mediated talks have stalled.",
+              typeface(FONT_SANS, 15), 320, 20, cap=5)
+    verdict_y = columns_y + 132
+    cv.rectangle([32, verdict_y, CANVAS_W - 32, verdict_y + 30],
+                 outline=COL_RED, width=2)
+    cv.text((44, verdict_y + 7),
+            "VERDICT IN ANTALYA:  44 HOURS OF OVERTIME  •  NO CONSENSUS  •  PARIS DEAL STILL STANDS",
+            font=typeface(FONT_SANS_BOLD, 14), fill=COL_RED)
+    hrule(cv, 32, CANVAS_W - 32, 462, fill=COL_INK, width=2)
 
-img.save(OUT, "PNG", optimize=True)
-print("saved", OUT, img.size)
+    # ---------- markets band: Friday's rout ----------
+    cv.rectangle([0, 472, CANVAS_W, 566], fill=COL_SLATE)
+    cv.text((32, 482), "FRIDAY'S ROUT: THE AI TRADE UNRAVELS",
+            font=typeface(FONT_SANS_BOLD, 20), fill=(255, 255, 255))
+    cv.text((32, 508), "The S&P 500 fell 3.7% on Friday, its worst week since March 2020.",
+            font=typeface(FONT_SANS, 15), fill=COL_MIST)
+    cv.text((32, 527), "Nasdaq 100 is in a bear market; world stocks fell 7 days in a row.",
+            font=typeface(FONT_SANS, 15), fill=COL_MIST)
+    cv.text((32, 546), "Tokyo is closed today for a holiday. Bitcoin near $59,900.",
+            font=typeface(FONT_SANS, 15), fill=COL_MIST)
+    friday_drops = [("TAIWAN", "-6.2%", 6.2),
+                    ("NASDAQ", "-5.3%", 5.3),
+                    ("KOSPI", "-5.2%", 5.2),
+                    ("NIKKEI", "-5.1%", 5.1),
+                    ("S&P 500", "-3.7%", 3.7)]
+    for row, (name, value, magnitude) in enumerate(friday_drops):
+        drop_bar(cv, 560, 480 + row * 17, name, value, magnitude, 640, 200)
+
+    # ---------- story cards: two rows of three ----------
+    stories = [
+        ("UKRAINE  •  WAR", "14 missing as drone flattens Kyiv flats",
+         "A Russian drone struck a five-storey block in Dymer, north of Kyiv, "
+         "on Sunday morning. One body was recovered; 14 people, including two "
+         "children, are unaccounted for. Nine were evacuated."),
+        ("BALTIC  •  SHADOW WAR", "Burning Russian ship towed from Finnish waters",
+         "The sanctioned cargo ship Sparta II, hit by drones on Saturday, was "
+         "still smouldering on Sunday as Finland, Estonia and Russia fought "
+         "the fire together. All 16 crew were evacuated."),
+        ("NATO  •  POLAND", "NATO meets today after missiles land in Poland",
+         "Three Russian Kh-101 missiles crossed into Poland on Friday during a "
+         "huge barrage on Ukraine. Nobody was hurt. NATO's council meets in "
+         "Brussels today; chief Mark Rutte called it a “grave violation”."),
+        ("INDONESIA  •  DISASTER", "50 missing after candy factory fire",
+         "A fire tore through the PT Fonusa Agung Mulia candy factory in Banten "
+         "on Saturday evening. Three workers are confirmed dead, seven body "
+         "bags were recovered and about 50 are missing."),
+        ("JUSTICE  •  THE HAGUE", "World court: Myanmar committed genocide",
+         "The International Court of Justice ruled on Thursday that Myanmar "
+         "committed genocide against the Rohingya in 2017 — the first time it "
+         "has found a state guilty of genocide. Reparations were ordered."),
+        ("SPORT  •  TENNIS", "Alcaraz beats Zverev to win ATP Finals",
+         "Carlos Alcaraz beat world No. 1 Alexander Zverev 6–2, 7–6(7) in Turin "
+         "on Sunday to win his first ATP Finals title. He is only the fourth "
+         "man to hold a career Grand Slam and this trophy."),
+    ]
+    grid_x, grid_y = 32, 574
+    card_w, card_h, gap_x, gap_y = 306, 178, 12, 10
+    for pos, (kicker, headline, body) in enumerate(stories):
+        x = grid_x + (pos % 3) * (card_w + gap_x)
+        y = grid_y + (pos // 3) * (card_h + gap_y)
+        story_card(cv, x, y, card_w, card_h, kicker, headline, body)
+
+    # ---------- footer: sources + ticker ----------
+    cv.text((32, 942),
+            "Sources: Reuters, AP, CNN, BBC, AFP, ATP Tour  •  First reported 22–23 Nov 2026; markets are Friday's trading; ICJ ruling 19 Nov.",
+            font=typeface(FONT_SANS, 12), fill=COL_GREY)
+    cv.rectangle([0, 962, CANVAS_W, CANVAS_H], fill=COL_NAVY)
+    cv.text((32, 968), "ALSO TODAY",
+            font=typeface(FONT_SANS_BOLD, 14), fill=COL_GOLD)
+    cv.text((32, 986),
+            "Belgium grounds all flights 07:00–21:00 today in a national strike — 429 flights, 59,500 passengers  •  Nepal's PM meets Modi in Delhi",
+            font=typeface(FONT_SANS, 13), fill=(235, 235, 240))
+    cv.text((32, 1004),
+            "South Korea's education minister quits over AI cheating  •  India post a record 720/9 in Wellington  •  Van Gogh sells for $190.4m in New York",
+            font=typeface(FONT_SANS, 13), fill=(235, 235, 240))
+    return page
+
+
+if __name__ == "__main__":
+    front_page = build_page()
+    front_page.save(OUTPUT_FILE, "PNG", optimize=True)
+    print("saved", OUTPUT_FILE, front_page.size)
